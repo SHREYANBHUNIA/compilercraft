@@ -13,3 +13,6 @@
 - [x] Connect the React playground to the Rust Axum compiler API for live artifact and diagnostic responses, with an explicit preview fallback state.
 - [x] Configure a deployable Rust-capable API hosting path and document the frontend API base URL contract.
 - [x] Verify live compilation from the editor through the API and refresh the project checkpoint.
+- [ ] Publish the current CompilerCraft project to a private GitHub repository under the connected account.
+- [ ] Add GitHub deployment handoff documentation for the Dockerized Rust and Node application.
+- [ ] Verify the remote repository contents and provide the deployment URL and next steps.
