@@ -5,6 +5,7 @@
 # Build outputs
 dist/
 build/
+rust-compiler/target/
 *.dist
 
 # Environment variables

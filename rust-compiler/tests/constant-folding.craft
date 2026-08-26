@@ -1,0 +1,7 @@
+// RUN: %craftc %s | FileCheck %s
+// CHECK: const i32 20
+
+fn main() -> i32 {
+  let x: i32 = 2 * 10;
+  return x;
+}
