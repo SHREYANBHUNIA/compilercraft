@@ -14,5 +14,4 @@ This workspace provides the server-side counterpart to the visual studio. The `c
 | `api/src/main.rs` | Axum `POST /api/compile` and `GET /health` endpoints. |
 | `tests/` | LLVM-style source fixture guidance. |
 
-Run `cargo test --workspace` from this directory to validate the compiler stages. Run `cargo run -p craft-api` to expose the service locally; the frontend’s local artifact model uses the same inspection shape for the Node-managed preview.
-
+Run `cargo test --workspace` from this directory to validate the compiler stages. Run `cargo run -p craft-api` to expose the service locally. The Node application starts this process automatically for development compilation requests; deployed builds package the release binary beside the Node server. Set `CRAFT_COMPILER_API_URL` to target a separately hosted Axum service instead.

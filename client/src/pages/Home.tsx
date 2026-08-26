@@ -1,6 +1,7 @@
 import { AstDiagram } from "@/components/AstDiagram";
 import { StageDiagram } from "@/components/StageDiagram";
-import { compileSource, explainStage, stageMeta, type ArtifactBundle, type StageId } from "@/lib/compilerArtifacts";
+import { compileSource, explainStage, fromLiveArtifacts, stageMeta, type ArtifactBundle, type StageId } from "@/lib/compilerArtifacts";
+import { trpc } from "@/lib/trpc";
 import {
   ArrowRight,
   BadgeCheck,
@@ -129,7 +130,11 @@ export default function Home() {
   const [activeStage, setActiveStage] = useState<StageId>("optimize");
   const [showAssistant, setShowAssistant] = useState(true);
   const [hasUncompiledEdits, setHasUncompiledEdits] = useState(false);
+  const [liveArtifacts, setLiveArtifacts] = useState<ArtifactBundle | null>(null);
+  const [compilerMode, setCompilerMode] = useState<"local" | "live" | "fallback">("local");
+  const compileMutation = trpc.compiler.compile.useMutation();
   const bundle = useMemo(() => compileSource(compiledSource), [compiledSource]);
+  const activeBundle = liveArtifacts ?? bundle;
   const stage = stageMeta[activeStage];
   const sourceLines = source.split("\n");
 
@@ -143,19 +148,27 @@ export default function Home() {
     setHasUncompiledEdits(true);
   };
 
-  const compile = (nextStage?: StageId) => {
+  const compile = async (nextStage?: StageId) => {
     setCompiledSource(source);
     setHasUncompiledEdits(false);
     if (nextStage) setActiveStage(nextStage);
+    try {
+      const live = await compileMutation.mutateAsync({ source });
+      setLiveArtifacts(fromLiveArtifacts(source, live));
+      setCompilerMode("live");
+    } catch {
+      setLiveArtifacts(null);
+      setCompilerMode("fallback");
+    }
   };
 
   const renderOutput = () => {
-    if (activeStage === "tokens") return <TokenOutput bundle={bundle} />;
-    if (activeStage === "ast") return <AstDiagram tree={bundle.ast} />;
-    if (activeStage === "semantic") return <SemanticOutput bundle={bundle} />;
-    if (activeStage === "ir") return <IrOutput label="Three-address IR / pre-optimization" lines={bundle.irBefore} />;
-    if (activeStage === "optimize") return <OptimizationOutput bundle={bundle} />;
-    return <MachineOutput bundle={bundle} />;
+    if (activeStage === "tokens") return <TokenOutput bundle={activeBundle} />;
+    if (activeStage === "ast") return <AstDiagram tree={activeBundle.ast} />;
+    if (activeStage === "semantic") return <SemanticOutput bundle={activeBundle} />;
+    if (activeStage === "ir") return <IrOutput label="Three-address IR / pre-optimization" lines={activeBundle.irBefore} />;
+    if (activeStage === "optimize") return <OptimizationOutput bundle={activeBundle} />;
+    return <MachineOutput bundle={activeBundle} />;
   };
 
   return (
@@ -163,7 +176,7 @@ export default function Home() {
       <header className="studio-header">
         <a className="brand" href="#studio" aria-label="CompilerCraft home"><span className="brand-mark">C</span><span>CompilerCraft</span></a>
         <nav><a className="active" href="#studio">Studio</a><a href="#language">Language</a><a href="#notes">Field notes</a></nav>
-        <div className="header-actions"><span className="status-dot" /> <span>Rust target</span><button className="header-button" onClick={() => compile("machine")}><CirclePlay size={15} /> Run build</button></div>
+        <div className="header-actions"><span className={`status-dot ${compilerMode === "fallback" ? "fallback" : ""}`} /> <span>{compilerMode === "live" ? "Axum live" : "Rust target"}</span><button className="header-button" disabled={compileMutation.isPending} onClick={() => void compile("machine")}><CirclePlay size={15} /> {compileMutation.isPending ? "Building" : "Run build"}</button></div>
       </header>
 
       <main id="studio">
@@ -187,14 +200,14 @@ export default function Home() {
           </aside>
 
           <div className="workbench">
-            <div className="workbench-topline"><div><span>Working file</span><strong>orbit.craft</strong></div><div className={`compile-state ${hasUncompiledEdits ? "pending" : ""}`}><i />{hasUncompiledEdits ? "Edits not compiled" : "Artifact set current"}</div></div>
+            <div className="workbench-topline"><div><span>Working file</span><strong>orbit.craft</strong></div><div className={`compile-state ${hasUncompiledEdits ? "pending" : compilerMode === "fallback" ? "fallback" : ""}`}><i />{hasUncompiledEdits ? "Edits not compiled" : compilerMode === "live" ? "Live Axum artifacts" : compilerMode === "fallback" ? "Preview fallback — API unavailable" : "Artifact set current"}</div></div>
             <div className="stage-strip">
               {STAGES.map(({ id, icon: Icon }) => <button key={id} onClick={() => setActiveStage(id)} className={activeStage === id ? "current" : ""}><span>{stageMeta[id].index}</span><Icon size={15} /><strong>{stageMeta[id].label}</strong></button>)}
             </div>
 
             <div className="editor-output-grid">
               <section className="source-panel">
-                <div className="panel-heading"><div><span>Source</span><strong>craft / typed</strong></div><div className="source-actions"><button aria-label="Format source"><Braces size={15} /></button><button onClick={() => compile()} className="compile-button"><Sparkles size={14} /> Compile</button></div></div>
+                <div className="panel-heading"><div><span>Source</span><strong>craft / typed</strong></div><div className="source-actions"><button aria-label="Format source"><Braces size={15} /></button><button disabled={compileMutation.isPending} onClick={() => void compile()} className="compile-button"><Sparkles size={14} /> {compileMutation.isPending ? "Compiling" : "Compile"}</button></div></div>
                 <div className="source-editor"><div className="line-numbers">{sourceLines.map((_, index) => <span key={index}>{String(index + 1).padStart(2, "0")}</span>)}</div><textarea value={source} spellCheck={false} onChange={event => { setSource(event.target.value); setHasUncompiledEdits(true); }} aria-label="Craft language source editor" /></div>
                 <div className="editor-foot"><span><i /> static types enabled</span><span>{sourceLines.length} lines</span></div>
               </section>
@@ -202,15 +215,15 @@ export default function Home() {
               <section className="artifact-panel">
                 <div className="panel-heading artifact-heading"><div><span>{stage.eyebrow}</span><strong>{stage.title}</strong></div><span className="artifact-no">Artifact {stage.index} / 06</span></div>
                 <p className="artifact-description">{stage.description}</p>
-                <div className="artifact-body">{activeStage !== "ast" && <StageDiagram stage={activeStage} artifacts={bundle} />}{renderOutput()}</div>
+                <div className="artifact-body">{activeStage !== "ast" && <StageDiagram stage={activeStage} artifacts={activeBundle} />}{renderOutput()}</div>
               </section>
             </div>
 
             <div className="diagnostic-row">
-              <div className={`diagnostic ${bundle.diagnostics[0].level}`}><div>{bundle.diagnostics[0].level === "success" ? <BadgeCheck size={17} /> : <CircleAlert size={17} />}</div><p><strong>{bundle.diagnostics[0].message}</strong><span>{bundle.diagnostics[0].detail}</span></p></div>
+              <div className={`diagnostic ${activeBundle.diagnostics[0].level}`}><div>{activeBundle.diagnostics[0].level === "success" ? <BadgeCheck size={17} /> : <CircleAlert size={17} />}</div><p><strong>{activeBundle.diagnostics[0].message}</strong><span>{activeBundle.diagnostics[0].detail}</span></p></div>
               <button className={`assistant-toggle ${showAssistant ? "open" : ""}`} onClick={() => setShowAssistant(value => !value)}><BotMessageSquare size={16} /> Studio assistant <span>{showAssistant ? "Hide" : "Explain"}</span></button>
             </div>
-            {showAssistant && <div className="assistant-card" id="notes"><div className="assistant-mark"><BotMessageSquare size={19} /></div><div><span>Readable compiler note</span><strong>{stage.eyebrow}</strong><p>{explainStage(activeStage, bundle)}</p></div><button onClick={() => setActiveStage("optimize")}>See the optimization <ArrowRight size={14} /></button></div>}
+            {showAssistant && <div className="assistant-card" id="notes"><div className="assistant-mark"><BotMessageSquare size={19} /></div><div><span>Readable compiler note</span><strong>{stage.eyebrow}</strong><p>{explainStage(activeStage, activeBundle)}</p></div><button onClick={() => setActiveStage("optimize")}>See the optimization <ArrowRight size={14} /></button></div>}
           </div>
         </section>
       </main>

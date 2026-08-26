@@ -10,3 +10,6 @@
 - [x] Add Rust/Axum-oriented compiler module scaffolding for lexer, parser, ast, semantic, ir, optimizer, codegen, runtime, playground, and tests.
 - [x] Add LLVM-oriented compiler test guidance and browser-facing TypeScript unit tests for the playground artifact logic.
 - [x] Verify the interactive workspace visually, run the application test suite, and prepare a final project checkpoint.
+- [x] Connect the React playground to the Rust Axum compiler API for live artifact and diagnostic responses, with an explicit preview fallback state.
+- [x] Configure a deployable Rust-capable API hosting path and document the frontend API base URL contract.
+- [x] Verify live compilation from the editor through the API and refresh the project checkpoint.

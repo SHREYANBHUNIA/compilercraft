@@ -39,6 +39,16 @@ export type ArtifactBundle = {
   sourceSummary: string;
 };
 
+export type LiveCompilerArtifacts = {
+  tokens: Array<{ kind: string; lexeme: string; line: number; column: number }>;
+  ast: unknown | null;
+  semantic: { symbols: Array<{ name: string; type_name: string; scope: string; role: string }>; diagnostics: Array<{ severity: string; message: string; line: number; column: number; note?: string | null }> } | null;
+  ir_before: { functions: Array<{ name: string; instructions: unknown[] }> } | null;
+  ir_after: { functions: Array<{ name: string; instructions: unknown[] }> } | null;
+  machine: { target: string; instructions: string[] } | null;
+  diagnostics: Array<{ severity: string; message: string; line: number; column: number; note?: string | null }>;
+};
+
 export const stageMeta: Record<StageId, { index: string; label: string; title: string; eyebrow: string; description: string }> = {
   tokens: {
     index: "01",
@@ -233,4 +243,96 @@ export function explainStage(stage: StageId, bundle: ArtifactBundle): string {
     return "The IR makes data flow explicit. Temporaries such as %t0 and %t2 allow optimization passes to reason about values without source-level syntax getting in the way.";
   }
   return "Code generation selects a compact instruction sequence after the program has passed semantic checks and optimization. The comment preserves the reason behind the immediate value.";
+}
+
+function typeLabel(value: unknown): string {
+  if (typeof value === "string") return value.toLowerCase();
+  if (value && typeof value === "object") {
+    const [name, inner] = Object.entries(value as Record<string, unknown>)[0] ?? ["unit", ""];
+    return name === "Array" ? `[${typeLabel(inner)}]` : name.toLowerCase();
+  }
+  return "unit";
+}
+
+function astExpression(value: unknown): AstNode {
+  const record = value as Record<string, unknown>;
+  const [kind, content] = Object.entries(record)[0] ?? ["Unknown", null];
+  if (kind === "Integer") return { id: `literal-${content}`, label: String(content), detail: "i32 literal", kind: "literal" };
+  if (kind === "Identifier") return { id: `name-${content}`, label: String(content), detail: "resolved identifier", kind: "literal" };
+  if (kind === "Array") return { id: "array", label: "Array literal", detail: "[i32]", kind: "expression" };
+  if (kind === "Binary" && content && typeof content === "object") {
+    const binary = content as Record<string, unknown>;
+    const operator = String(binary.operator ?? "?").replace("Multiply", "*").replace("Add", "+").replace("Subtract", "-").replace("Divide", "/");
+    return { id: `binary-${operator}`, label: `Binary · ${operator}`, detail: "Rust parser expression", kind: "expression", children: [astExpression(binary.left), astExpression(binary.right)] };
+  }
+  return { id: `expression-${kind}`, label: kind, detail: "parsed expression", kind: "expression" };
+}
+
+function astStatement(value: unknown, index: number): AstNode {
+  const record = value as Record<string, unknown>;
+  const [kind, content] = Object.entries(record)[0] ?? ["Statement", null];
+  const details = (content ?? {}) as Record<string, unknown>;
+  if (kind === "Let") {
+    const name = String(details.name ?? "binding");
+    return { id: `let-${name}-${index}`, label: `Let · ${name}: ${typeLabel(details.type_ref)}`, detail: "immutable binding", kind: "statement", children: [astExpression(details.value)] };
+  }
+  if (kind === "Return") return { id: `return-${index}`, label: "Return", detail: "function result", kind: "statement", children: [astExpression(content)] };
+  if (kind === "If") return { id: `if-${index}`, label: "If / else", detail: "control-flow branch", kind: "statement" };
+  if (kind === "Loop") return { id: `loop-${index}`, label: "For loop", detail: "range iteration", kind: "statement" };
+  return { id: `statement-${index}`, label: kind, detail: "parsed statement", kind: "statement" };
+}
+
+function liveAst(value: unknown, fallback: AstNode): AstNode {
+  const program = value as { functions?: Array<{ name?: string; return_type?: unknown; body?: unknown[] }> } | null;
+  const functionNode = program?.functions?.[0];
+  if (!functionNode) return fallback;
+  const name = functionNode.name ?? "main";
+  return { id: "program", label: "Program", detail: "Rust parser output", kind: "root", children: [{ id: "function", label: `Function · ${name}`, detail: `returns ${typeLabel(functionNode.return_type)}`, kind: "function", children: (functionNode.body ?? []).map(astStatement) }] };
+}
+
+function operand(value: unknown): string {
+  const record = value as Record<string, unknown>;
+  if ("Constant" in record) return String(record.Constant);
+  if ("Temporary" in record) return String(record.Temporary);
+  return "?";
+}
+
+function liveIr(value: LiveCompilerArtifacts["ir_before"]): IrLine[] {
+  const instructions = value?.functions?.[0]?.instructions ?? [];
+  return instructions.map((instruction, index) => {
+    const record = instruction as Record<string, unknown>;
+    const [kind, content] = Object.entries(record)[0] ?? ["instruction", {}];
+    const fields = (content ?? {}) as Record<string, unknown>;
+    let statement = kind;
+    let meaning = "Rust lowering";
+    if (kind === "Constant") { statement = `${fields.destination} = const i32 ${fields.value}`; meaning = "materialize folded value"; }
+    if (kind === "Binary") { statement = `${fields.destination} = ${fields.operator} i32 ${operand(fields.left)}, ${operand(fields.right)}`; meaning = "evaluate binary expression"; }
+    if (kind === "Store") { statement = `store i32 ${operand(fields.value)}, @${fields.name}`; meaning = "bind local value"; }
+    if (kind === "Return") { statement = `ret i32 ${operand(fields.value)}`; meaning = "return function value"; }
+    return { id: `live-${index}`, instruction: statement, meaning };
+  });
+}
+
+export function fromLiveArtifacts(source: string, live: LiveCompilerArtifacts): ArtifactBundle {
+  const fallback = compileSource(source);
+  const liveDiagnostics = live.diagnostics.map(diagnostic => ({
+    level: diagnostic.severity === "error" ? "error" as const : "warning" as const,
+    message: diagnostic.message,
+    detail: diagnostic.note ?? `Rust compiler location ${diagnostic.line}:${diagnostic.column}.`,
+  }));
+  return {
+    ...fallback,
+    tokens: live.tokens.map(token => ({
+      value: token.lexeme,
+      kind: token.kind === "Fn" || token.kind === "Let" || token.kind === "If" || token.kind === "Else" || token.kind === "For" || token.kind === "In" || token.kind === "Return" ? "keyword" : token.kind === "I32" || token.kind === "Bool" || token.kind === "StringType" ? "type" : token.kind === "Number" ? "number" : token.kind === "Identifier" ? "identifier" : token.kind === "Plus" || token.kind === "Minus" || token.kind === "Star" || token.kind === "Slash" || token.kind === "Equal" || token.kind === "EqualEqual" || token.kind === "Greater" || token.kind === "Less" ? "operator" : "punctuation",
+      location: `${String(token.line).padStart(2, "0")}:${String(token.column).padStart(2, "0")}`,
+    })),
+    ast: liveAst(live.ast, fallback.ast),
+    symbols: live.semantic?.symbols.map(symbol => ({ name: symbol.name, type: symbol.type_name, scope: symbol.scope, usage: symbol.role })) ?? fallback.symbols,
+    irBefore: live.ir_before ? liveIr(live.ir_before) : fallback.irBefore,
+    irAfter: live.ir_after ? liveIr(live.ir_after) : fallback.irAfter,
+    machine: live.machine?.instructions ?? fallback.machine,
+    diagnostics: liveDiagnostics.length ? liveDiagnostics : [{ level: "success", message: "Rust pipeline completed without errors.", detail: `${live.tokens.length} tokens were produced by the live Axum compiler.` }],
+    sourceSummary: "Live Rust/Axum compilation artifacts.",
+  };
 }
